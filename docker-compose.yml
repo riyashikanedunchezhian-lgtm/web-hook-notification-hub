@@ -44,7 +44,7 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-    command: python worker.py
+    command: python -c "from redis_queue import celery_app; celery_app.worker_main(['worker', '--loglevel=info', '--concurrency=4'])"
 
 volumes:
   redis_data:

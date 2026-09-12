@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -10,7 +10,7 @@ import uuid
 from config import settings
 from models import WebhookEvent, WebhookResponse, DashboardEvent, EventStatus
 from webhook_security import verify_webhook_signature
-from queue import EventStore, IdempotencyManager
+from redis_queue import EventStore, IdempotencyManager, celery_app
 from tasks import process_webhook
 from notifications import GitHubEventHandler
 
@@ -48,7 +48,7 @@ async def dashboard(request: Request):
 async def health_check():
     """Health check endpoint."""
     try:
-        from queue import redis_client
+        from redis_queue import redis_client
         redis_client.ping()
         return {"status": "healthy", "redis": "connected"}
     except Exception as e:
@@ -59,7 +59,7 @@ async def health_check():
 async def github_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
-    verified_payload: bytes = None
+    verified_payload: bytes = Depends(verify_webhook_signature)
 ):
     """
     GitHub webhook endpoint.
@@ -71,9 +71,6 @@ async def github_webhook(
     4. Queues the event for processing
     5. Returns immediately (async processing)
     """
-    if verified_payload is None:
-        # This means signature verification failed
-        raise HTTPException(status_code=403, detail="Invalid signature")
     
     try:
         # Parse payload
@@ -109,12 +106,8 @@ async def github_webhook(
         event_dict["status"] = event.status.value
         EventStore.save_event(event_dict)
         
-        # Queue for async processing
-        background_tasks.add_task(
-            process_webhook.delay,
-            event.id,
-            event_dict
-        )
+        # Queue for async processing with Celery
+        process_webhook.delay(event.id, event_dict)
         
         return WebhookResponse(
             success=True,
@@ -151,19 +144,22 @@ async def retry_event(event_id: str):
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
     
-    if event["status"] != EventStatus.FAILED:
+    if event["status"] not in [EventStatus.FAILED.value, EventStatus.RETRYING.value]:
         raise HTTPException(
             status_code=400, 
-            detail="Only failed events can be retried"
+            detail="Only failed or retrying events can be retried"
         )
     
     # Reset status and queue for processing
-    event["status"] = EventStatus.PENDING
+    event["status"] = EventStatus.PENDING.value
     event["retry_count"] = event.get("retry_count", 0) + 1
     EventStore.save_event(event)
     
     # Queue for processing
-    process_webhook.delay(event_id, event)
+    celery_app.send_task(
+        'tasks.process_webhook',
+        args=[event_id, event]
+    )
     
     return {"success": True, "message": "Event queued for retry"}
 

@@ -13,9 +13,9 @@ class RateLimiter:
         self.max_requests = max_requests
         self.window_seconds = window_seconds
     
-    async def acquire(self, key: str) -> bool:
-        """Try to acquire a rate limit slot."""
-        from queue import redis_client
+    def acquire(self, key: str) -> bool:
+        """Try to acquire a rate limit slot (sync version)."""
+        from redis_queue import redis_client
         
         current_time = datetime.utcnow().timestamp()
         window_start = current_time - self.window_seconds
@@ -34,6 +34,10 @@ class RateLimiter:
         redis_client.expire(key, self.window_seconds)
         
         return True
+    
+    async def acquire_async(self, key: str) -> bool:
+        """Try to acquire a rate limit slot (async version)."""
+        return self.acquire(key)
 
 
 class SlackNotifier:
@@ -44,12 +48,16 @@ class SlackNotifier:
         self.channel = settings.slack_channel
         self.rate_limiter = RateLimiter(max_requests=20, window_seconds=60)
     
-    async def send_notification(self, message: str, event_data: dict) -> dict:
-        """Send a notification to Slack with retry logic."""
+    def send_notification(self, message: str, event_data: dict) -> dict:
+        """Sync wrapper for async send_notification."""
+        return asyncio.run(self._send_notification_async(message, event_data))
+    
+    async def _send_notification_async(self, message: str, event_data: dict) -> dict:
+        """Send a notification to Slack with retry logic (async implementation)."""
         rate_limit_key = f"slack_rate_limit"
         
         # Check rate limit
-        if not await self.rate_limiter.acquire(rate_limit_key):
+        if not await self.rate_limiter.acquire_async(rate_limit_key):
             return {
                 "success": False,
                 "error": "Rate limit exceeded"

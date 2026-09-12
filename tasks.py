@@ -1,5 +1,5 @@
 from celery import current_task
-from queue import celery_app, EventStore, IdempotencyManager
+from redis_queue import celery_app, EventStore, IdempotencyManager
 from notifications import SlackNotifier, GitHubEventHandler
 from models import EventStatus
 import json
@@ -13,14 +13,14 @@ def process_webhook(self, event_id: str, event_data: dict):
     """
     try:
         # Update status to processing
-        EventStore.update_event_status(event_id, EventStatus.PROCESSING)
+        EventStore.update_event_status(event_id, EventStatus.PROCESSING.value)
         
         # Check idempotency
         idempotency_key = event_data.get("idempotency_key")
         if idempotency_key and IdempotencyManager.is_duplicate(idempotency_key):
             EventStore.update_event_status(
                 event_id, 
-                EventStatus.SUCCESS,
+                EventStatus.SUCCESS.value,
                 "Duplicate event, already processed"
             )
             return {"status": "duplicate", "event_id": event_id}
@@ -37,7 +37,7 @@ def process_webhook(self, event_id: str, event_data: dict):
             result = notifier.send_notification(message, event_data)
             
             if result["success"]:
-                EventStore.update_event_status(event_id, EventStatus.SUCCESS)
+                EventStore.update_event_status(event_id, EventStatus.SUCCESS.value)
                 
                 # Mark as processed for idempotency
                 if idempotency_key:
@@ -47,7 +47,7 @@ def process_webhook(self, event_id: str, event_data: dict):
                 return {"status": "success", "event_id": event_id}
             else:
                 error_msg = result.get("error", "Unknown error")
-                EventStore.update_event_status(event_id, EventStatus.FAILED, error_msg)
+                EventStore.update_event_status(event_id, EventStatus.FAILED.value, error_msg)
                 
                 # Retry on failure (if retries available)
                 if self.request.retries < self.max_retries:
@@ -58,7 +58,7 @@ def process_webhook(self, event_id: str, event_data: dict):
         else:
             EventStore.update_event_status(
                 event_id, 
-                EventStatus.FAILED, 
+                EventStatus.FAILED.value, 
                 f"Unknown source: {source}"
             )
             return {"status": "failed", "event_id": event_id, "error": "Unknown source"}
@@ -72,7 +72,7 @@ def process_webhook(self, event_id: str, event_data: dict):
         
         EventStore.update_event_status(
             event_id, 
-            EventStatus.RETRYING, 
+            EventStatus.RETRYING.value, 
             str(e)
         )
         
